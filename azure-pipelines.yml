@@ -7,69 +7,82 @@ trigger:
 - main
 
 variables:
-
-  # Azure Resource Manager connection created during pipeline creation
   azureSubscription: '6c1e2d11-0a4f-43f6-8ef9-7564042a27d7'
-
-  # Web app name
   webAppName: 'azureappcloud'
-
-  # Environment name
-  environmentName: 'azureappcloud'
-
-  # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
 stages:
+
+# =========================
+# BUILD STAGE
+# =========================
 - stage: Build
-  displayName: Build stage
+  displayName: Build Stage
   jobs:
-  - job: MavenPackageAndPublishArtifacts
-    displayName: Maven Package and Publish Artifacts
+  - job: BuildJob
+    displayName: Build WAR File
     pool:
       vmImage: $(vmImageName)
 
     steps:
+
+    # Install Java 17
+    - task: JavaToolInstaller@0
+      inputs:
+        versionSpec: '17'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    # Maven Build
     - task: Maven@4
-      displayName: 'Maven Package'
+      displayName: 'Maven Clean Package'
       inputs:
         mavenPomFile: 'MyWebApp/pom.xml'
-        mavenOptions: '-Xmx3072m'
-        javaHomeOption: 'JDKVersion'
-        jdkVersionOption: '1.17' 
-        jdkArchitectureOption: 'x64'
+        goals: 'clean package'
+        options: '-Xmx3072m'
         publishJUnitResults: true
         testResultsFiles: '**/surefire-reports/TEST-*.xml'
-        goals: 'clean package'
 
-    - task: CopyFiles@2
-      displayName: 'Copy Files to artifact staging directory'
-      inputs:
-        SourceFolder: '$(System.DefaultWorkingDirectory)'
-        Contents: '**/target/*.?(war|jar)'
-        TargetFolder: $(Build.ArtifactStagingDirectory)
+    # Rename WAR to ROOT.war
+    - script: |
+        echo "Finding WAR file..."
+        WAR_FILE=$(find MyWebApp -name "*.war" | head -n 1)
+        echo "WAR found at $WAR_FILE"
+        cp $WAR_FILE $(Build.ArtifactStagingDirectory)/ROOT.war
+      displayName: 'Rename WAR to ROOT.war'
 
-    - upload: $(Build.ArtifactStagingDirectory)
+    # Publish Artifact
+    - publish: $(Build.ArtifactStagingDirectory)
       artifact: drop
 
+
+# =========================
+# DEPLOY STAGE
+# =========================
 - stage: Deploy
-  displayName: Deploy stage
+  displayName: Deploy Stage
   dependsOn: Build
   condition: succeeded()
+
   jobs:
-  - deployment: DeployLinuxWebApp
-    displayName: Deploy Linux Web App
-    environment: $(environmentName)
+  - deployment: DeployWebApp
+    displayName: Deploy to Azure Linux Web App
+    environment: 'azureappcloud'
     pool:
       vmImage: $(vmImageName)
+
     strategy:
       runOnce:
         deploy:
           steps:
+
+          - download: current
+            artifact: drop
+
           - task: AzureWebApp@1
-            displayName: 'Azure Web App Deploy: azureappcloud'
+            displayName: 'Deploy ROOT.war to Azure App Service'
             inputs:
               azureSubscription: $(azureSubscription)
               appType: webAppLinux
               appName: $(webAppName)
-              package: '$(Pipeline.Workspace)/drop/**/target/*.?(war|jar)'
+              package: '$(Pipeline.Workspace)/drop/ROOT.war'
